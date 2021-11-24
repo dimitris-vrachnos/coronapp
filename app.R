@@ -53,16 +53,14 @@ ui <- fluidPage(useShinyjs(),
 )
 
 server <- function(input, output, session) {
-  countSamplesQuery <- "select count(*) from Samples"
-  countPassedQuery <- 'select count(*) from Samples where QcStatus = "passed_qc"'
-  countFailedQuery <- 'select count(*) from Samples where QcStatus = "fail"'
+  
   countGenderQuery <- 'select Gender, count(Gender) from Samples where Gender is not null group by Gender'
   countVaccinatedQuery <- 'select count(IsVaccinated) from Samples where IsVaccinated = 1 group by IsVaccinated'
-  countRegionsQuery <- 'select Region, count(Region) from Samples where Region is not null group by Region order by count(Region) desc'
   ageRangeQuery <- 'select Min(Age), Max(Age) from Samples;'
   pangoLineageQuery <- 'select PangoLineage, count(PangoLineage) from Samples where PangoLineage is not null group by PangoLineage order by count(PangoLineage) desc'
-  scoprioCallQuery <- 'select ScorpioCall, count(ScorpioCall) from Samples where ScorpioCall is not null group by ScorpioCall order by count(ScorpioCall) desc'
   
+  
+  # A reactive expression that returns a dataframe with time intervals and selected mutation occurences
   intervaldf <- eventReactive(list(input$dates[1], input$dates[2], input$interval), {
     con <- dbConnect(SQLite(), dbPath)
     on.exit(dbDisconnect(con))
@@ -70,7 +68,6 @@ server <- function(input, output, session) {
     intervalQuery  <-  sqlInterpolate(con,
                                       'select strftime(?intervalUnit, SamplingDate) Interval from Samples where SamplingDate between ?dateLow and ?dateHigh group by Interval',
                                       intervalUnit = dateFormat ,dateLow = input$dates[1], dateHigh = input$dates[2])
-    print(intervalQuery)
     
     intervals <- dbGetQuery(con, intervalQuery)
     if (is.null(intervals)){
@@ -81,12 +78,11 @@ server <- function(input, output, session) {
     mutation <- paste0(input$protein, ":",input$mutation[1])
     input <- input$interval
     mutationTimelapseQuery <- sqlInterpolate(con, 'select strftime(?intervalUnit, SamplingDate) interval, count(MutationSample.MutationsMutationId)  from Samples
-    inner join MutationSample on MutationSample.SamplesSampleId = Samples.SampleId
-    where MutationSample.MutationsMutationId = ?mut
-    group by interval',intervalUnit = dateFormat, mut = mutation) 
+                                             inner join MutationSample on MutationSample.SamplesSampleId = Samples.SampleId
+                                             where MutationSample.MutationsMutationId = ?mut
+                                             group by interval',intervalUnit = dateFormat, mut = mutation) 
     df <- dbGetQuery(con, mutationTimelapseQuery)
     for(i in intersect(intervals$Interval, df$interval)){
-      
       intervals[intervals$Interval == i, 'Occurences']  = df[df$interval == i, 'count(MutationSample.MutationsMutationId)'] 
     }
     intervals
@@ -99,6 +95,7 @@ server <- function(input, output, session) {
   
   })
   
+  # a reactive expression that return all Proteins
   proteinNames <- reactive({
     proteinNamesQuery <- 'select distinct Protein from Mutations'
     con <- dbConnect(SQLite(), dbPath)
@@ -106,6 +103,7 @@ server <- function(input, output, session) {
     dbDisconnect(con)
     i$Protein
   })
+  # a reactive expression that returns all mutations in the selected Protein
   mutationNames <- reactive({
     con <- dbConnect(SQLite(), dbPath)
     mutationNamesQuery <- sqlInterpolate(con, "select distinct AminoacidMutation from Mutations where Protein = ?p", p = input$protein)
@@ -115,13 +113,16 @@ server <- function(input, output, session) {
     m$AminoacidMutation
   })
   
+  # An observe event that updated the proteins select box
   observe({
     updateSelectizeInput(session, "protein", choices=proteinNames(), selected = NULL, server = TRUE)  
   })
+  # An observe event that updated the selected protein mutations select box
   observe({
     updateSelectizeInput(session, "mutation", choices=mutationNames(), server = TRUE)
   })
   
+  # An observe event that listens to the submit button and plots time intevals - mutation occurences
   observeEvent(input$submit, {
     output$timelapse <- renderPlot({
       df <- intervaldf()
@@ -133,34 +134,44 @@ server <- function(input, output, session) {
   #output$proteins <- renderUI({
   #  selectInput("protein", "Select Protein", choices = getProteinNames())
   #})
-
+  
+  # Renders the text for the total number of samples in the database
   output$genderCount <- renderText({
     on.exit(dbDisconnect(con), add = TRUE)
     con <- dbConnect(SQLite(), dbPath)
+    countSamplesQuery <- "select count(*) from Samples"
     countSamples <- dbGetQuery(con, countSamplesQuery)
     countSamples$`count(*)`
   })
+  # Renders the text for the number of samples that have passed the qc in the database 
   output$passedCount <- renderText({
     on.exit(dbDisconnect(con), add = TRUE)
     con <- dbConnect(SQLite(), dbPath)
+    countPassedQuery <- 'select count(*) from Samples where QcStatus = "passed_qc"'
     countPassed <- dbGetQuery(con, countPassedQuery)
     countPassed$`count(*)`
   })
+  # Renders the text for the number of samples that have failed the qc in the database 
   output$failedCount <- renderText({
     on.exit(dbDisconnect(con), add = TRUE)
     con <- dbConnect(SQLite(), dbPath)
+    countFailedQuery <- 'select count(*) from Samples where QcStatus = "fail"'
     countFailed <- dbGetQuery(con, countFailedQuery)
     countFailed$`count(*)`
   })
+  # Renders the table for the Regions
   output$regionTable = DT::renderDataTable({
     on.exit(dbDisconnect(con), add = TRUE)
     con <- dbConnect(SQLite(), dbPath)
+    countRegionsQuery <- 'select Region, count(Region) from Samples where Region is not null group by Region order by count(Region) desc'
     countRegions <- dbGetQuery(con, countRegionsQuery)
     DT::datatable(countRegions)
   })
+  # Renders the table for the scorpio call information
   output$strainsTable <- DT::renderDataTable({
     on.exit(dbDisconnect(con), add = TRUE)
     con <- dbConnect(SQLite(), dbPath)
+    scoprioCallQuery <- 'select ScorpioCall, count(ScorpioCall) from Samples where ScorpioCall is not null group by ScorpioCall order by count(ScorpioCall) desc'
     strains <- dbGetQuery(con, scoprioCallQuery)
     DT::datatable(strains)
   })
