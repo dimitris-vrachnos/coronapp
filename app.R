@@ -6,6 +6,8 @@ library(RSQLite)
 library(DBI)
 library(plyr)
 library(ggplot2)
+library(dplyr)
+library(patchwork)
 
 dbPath <- "C:\\Users\\hemalab\\SQLiteStudio\\CovidDb_v2.db"
 con <- dbConnect(SQLite(), dbPath)
@@ -39,7 +41,6 @@ ui <- fluidPage(useShinyjs(),
     #         
     #),
     tabPanel(title = "Mutations",
-             #uiOutput("proteins")
              selectInput("protein", "Select Protein", ''),
              selectInput("mutation", "Select Mutation", '', multiple=TRUE),
              dateRangeInput("dates",label = "Select Date Range", start = '2020-01-01'),
@@ -59,6 +60,22 @@ server <- function(input, output, session) {
   ageRangeQuery <- 'select Min(Age), Max(Age) from Samples;'
   pangoLineageQuery <- 'select PangoLineage, count(PangoLineage) from Samples where PangoLineage is not null group by PangoLineage order by count(PangoLineage) desc'
   
+  # A reactive expression that returns a whole intervals-occurences(with zeros)dataframe
+  occurencesDf <- reactive({
+    con <- dbConnect(SQLite(), dbPath)
+    on.exit(dbDisconnect(con))
+    dateFormat <- paste0('%Y-%', input$interval)
+    intervalQuery  <-  sqlInterpolate(con,
+                                      'select strftime(?intervalUnit, SamplingDate) Interval from Samples where SamplingDate between ?dateLow and ?dateHigh group by Interval',
+                                      intervalUnit = dateFormat ,dateLow = input$dates[1], dateHigh = input$dates[2])
+    
+    intervals <- dbGetQuery(con, intervalQuery)
+    if (is.null(intervals)){
+      
+    }
+    intervals['Occurences'] = 0
+    intervals
+  })
   
   # A reactive expression that returns a dataframe with time intervals and selected mutation occurences
   intervaldf <- eventReactive(list(input$dates[1], input$dates[2], input$interval), {
@@ -85,6 +102,24 @@ server <- function(input, output, session) {
     for(i in intersect(intervals$Interval, df$interval)){
       intervals[intervals$Interval == i, 'Occurences']  = df[df$interval == i, 'count(MutationSample.MutationsMutationId)'] 
     }
+    intervals
+  })
+  
+  # A reactive expression that returns the intervals-total mutations dataframe
+  totalMutationsPerIntervalDf <- eventReactive(input$submit,{
+    con <- dbConnect(SQLite(), dbPath)
+    on.exit(dbDisconnect(con))
+    dateFormat <- paste0('%Y-%', input$interval)
+    query <- sqlInterpolate(con,
+                            'select strftime(?intervalUnit, SamplingDate) interval, count(SampleId) as TotalSamples from Samples
+                             where Samples.SamplingDate between ?dateLow and ?dateHigh
+                             group by interval', intervalUnit = dateFormat ,dateLow = input$dates[1], dateHigh = input$dates[2])
+    df <- dbGetQuery(con, query)
+    intervals <- occurencesDf()
+    for(i in intersect(intervals$Interval, df$interval)){
+      intervals[intervals$Interval == i, 'Occurences']  = df[df$interval == i, 'TotalSamples'] 
+    }
+    print(intervals)
     intervals
   })
   
@@ -125,15 +160,23 @@ server <- function(input, output, session) {
   # An observe event that listens to the submit button and plots time intevals - mutation occurences
   observeEvent(input$submit, {
     output$timelapse <- renderPlot({
+      totalMutationsDf <- totalMutationsPerIntervalDf()
       df <- intervaldf()
-      ggplot2::ggplot(data = df, aes(x = Interval, y = `Occurences`, group = 1)) + 
-        geom_path() + 
-        geom_point()
+      df[,'TotalMutations'] <- totalMutationsDf[,'Occurences']
+      df[,'freq'] <- df[,'Occurences'] / totalMutationsDf[,'Occurences']
+      for (row in 1:nrow(df)){
+        val <- paste0(as.character(df[row,'Occurences']),'/',as.character(df[row,'TotalMutations' ]))
+        df[row,'labels'] <- val
+      }
+      print(df)
+      ggplot2::ggplot(data = df, aes(x = Interval, label=labels, group =1)) + 
+        geom_line( aes(y=freq)) +
+        geom_line( aes(y=Occurences)) +
+        geom_text(aes(x = Interval, y=freq))+
+        ylim(0,1)
     })
   })
-  #output$proteins <- renderUI({
-  #  selectInput("protein", "Select Protein", choices = getProteinNames())
-  #})
+
   
   # Renders the text for the total number of samples in the database
   output$genderCount <- renderText({
@@ -175,18 +218,8 @@ server <- function(input, output, session) {
     strains <- dbGetQuery(con, scoprioCallQuery)
     DT::datatable(strains)
   })
-  
-  
 }
 
-getProteinNames <- function(){
-  proteinNamesQuery <- 'select distinct Protein from Mutations'
-  con <- dbConnect(SQLite(), dbPath)
-  i <- dbGetQuery(con, proteinNamesQuery)
-  dbDisconnect(con)
-  print(i) 
-  return(i$Protein)
-}
 
 
 shinyApp(ui = ui, server = server)
