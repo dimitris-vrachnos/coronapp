@@ -7,7 +7,7 @@ library(DBI)
 library(plyr)
 library(ggplot2)
 
-dbPath <- "C:\\Users\\hemalab\\SQLiteStudio\\CovidDb_v2.db"
+dbPath <- "C:\\Users\\HemaLab\\Desktop\\PROJECTS\\shiny_virome\\CovidDb_v2.db"
 con <- dbConnect(SQLite(), dbPath)
  
 mutationsDf <- dbGetQuery(con, "select * from Mutations limit 5")
@@ -46,6 +46,20 @@ ui <- fluidPage(useShinyjs(),
              radioButtons("interval", "Select Time interval", choices = c("Month" = "m", "Week" = "W")),
              plotOutput("timelapse"),
              actionButton("submit", "Submit", style="float:right")
+    ),
+    tabPanel(title = "Download",
+             h2("Download Fasta sequences and their respective annotation data"),
+             fluidRow(
+               column(width = 3, disabled(selectInput("protein2", "Select Protein", ''))),
+               column(width = 3, disabled(selectInput("mutation2", "Select Mutation", ''))),
+               column(width = 3, radioButtons("filterByMutation", "Filter samples by Specific Mutation", choices = c("Yes" = "Y", "No" = "N"), selected = "N"))),
+             dateRangeInput("downloadDates",label = "Select Date Range", start = '2020-01-01'),
+             radioButtons("filterFailed", "Filter QC failed samples", choices = c("Yes" = "Y", "No" = "N"), selected = "Y"),
+             actionButton("download", "Download", style="float:right",),
+             fluidRow(
+               column(width = 8, "No of Samples to download :"),
+               column(width = 4, textOutput(outputId = "DownloadCount"))
+             )
     )
   ),
   
@@ -85,7 +99,53 @@ server <- function(input, output, session) {
   observe({
     updateSelectizeInput(session, "mutation", choices=mutationNames(), server = TRUE)
   })
+  observe({
+    updateSelectizeInput(session, "protein2", choices=proteinNames(), selected = NULL, server = TRUE)  
+  })
+  observe({
+    updateSelectizeInput(session, "mutation2", choices=mutationNames(), server = TRUE)
+  })
+  ################Download Panel##########################################################################
+  observeEvent(input$filterByMutation,{
+    filterByMutation <- input$filterByMutation
+    if (filterByMutation == 'Y'){
+      enable("protein2")
+      enable("mutation2")
+    } else {
+      disable("protein2")
+      disable("mutation2")
+    }
+  })
   
+  observeEvent(input$download,{
+    on.exit(dbDisconnect(con), add = TRUE)
+    con <- dbConnect(SQLite(), dbPath)
+    lowDate <- input$downloadDates[1]
+    highDate <- input$downloadDates[2]
+    
+    if (input$filterFailed == 'Y'){
+      sqlfailed <- 'and QcStatus = passed_qc'
+    }else{
+      sqlfailed <- ''
+    }
+    
+    if (input$filterByMutation == 'Y'){
+      mutation <- paste0(input$protein2, ":",input$mutation2)
+      getSamplesforDownloadQuery <- sqlInterpolate(con, "select Fasta,SampleId,PangoLineage,Region,Wave,ScorpioCall,QcStatus,SamplingDate,Gender,Age,IsVaccinated,Outcome from Samples
+    inner join MutationSample on MutationSample.SamplesSampleId = Samples.SampleId
+    where MutationSample.MutationsMutationId = ?mut and ?qc", mut = mutation, qc = sqlfailed) 
+      df <- dbGetQuery(con, getSamplesforDownloadQuery)
+    }else {
+      getSamplesforDownloadQuery <- sqlInterpolate(con, "select Fasta,SampleId,PangoLineage,Region,Wave,ScorpioCall,QcStatus,SamplingDate,Gender,Age,IsVaccinated,Outcome from Samples
+    where MutationSample.MutationsMutationId = ?mut ?qc", qc = sqlfailed) 
+      df <- dbGetQuery(con, getSamplesforDownloadQuery)
+    }
+    
+  })
+  
+  
+  
+  ############## Plot Strains by time interval#######################################################
   observeEvent(input$submit, {
     output$timelapse <- renderPlot({
       on.exit(dbDisconnect(con), add = TRUE)
@@ -105,7 +165,7 @@ server <- function(input, output, session) {
   #output$proteins <- renderUI({
   #  selectInput("protein", "Select Protein", choices = getProteinNames())
   #})
-
+ ################### Home Tab calculations ################################################################
   output$genderCount <- renderText({
     on.exit(dbDisconnect(con), add = TRUE)
     con <- dbConnect(SQLite(), dbPath)
