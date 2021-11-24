@@ -52,8 +52,8 @@ ui <- fluidPage(useShinyjs(),
              h2("Download Fasta sequences and their respective annotation data"),
              fluidRow(
                column(width = 3, disabled(selectInput("protein2", "Select Protein", ''))),
-               column(width = 3, disabled(selectInput("mutation2", "Select Mutation", ''))),
-               column(width = 3, radioButtons("filterByMutation", "Filter samples by Specific Mutation", choices = c("Yes" = "Y", "No" = "N"), selected = "N"))),
+               column(width = 3, disabled(selectInput("mutation2", "Select Mutation", '',multiple =TRUE))),
+               column(width = 3, radioButtons("filterByMutation", "Filter samples by 1 Specific Mutation ", choices = c("Yes" = "Y", "No" = "N"), selected = "N"))),
              dateRangeInput("downloadDates",label = "Select Date Range", start = '2020-01-01'),
              radioButtons("filterFailed", "Filter QC failed samples", choices = c("Yes" = "Y", "No" = "N"), selected = "Y"),
              actionButton("download", "Download", style="float:right",),
@@ -126,6 +126,14 @@ server <- function(input, output, session) {
     dbDisconnect(con)
     m$AminoacidMutation
   })
+  mutationNames2 <- reactive({
+    con <- dbConnect(SQLite(), dbPath)
+    mutationNamesQuery <- sqlInterpolate(con, "select distinct AminoacidMutation from Mutations where Protein = ?p", p = input$protein2)
+    
+    m <- dbGetQuery(con, mutationNamesQuery)
+    dbDisconnect(con)
+    m$AminoacidMutation
+  })
 
   # An observe event that updated the proteins select box
   observe({
@@ -135,48 +143,57 @@ server <- function(input, output, session) {
   observe({
     updateSelectizeInput(session, "mutation", choices=mutationNames(), server = TRUE)
   })
-  observe({
-    updateSelectizeInput(session, "protein2", choices=proteinNames(), selected = NULL, server = TRUE)
-  })
-  observe({
-    updateSelectizeInput(session, "mutation2", choices=mutationNames(), server = TRUE)
-  })
+ observe({
+   updateSelectizeInput(session, "protein2", choices=proteinNames(), selected = NULL, server = TRUE)
+ })
+ observe({
+   updateSelectizeInput(session, "mutation2", choices=mutationNames2(), server = TRUE)
+ })
   ################Download Panel##########################################################################
   observeEvent(input$filterByMutation,{
     filterByMutation <- input$filterByMutation
     if (filterByMutation == 'Y'){
       enable("protein2")
       enable("mutation2")
+      
     } else {
       disable("protein2")
       disable("mutation2")
+      
     }
   })
 
   observeEvent(input$download,{
     on.exit(dbDisconnect(con), add = TRUE)
     con <- dbConnect(SQLite(), dbPath)
-    lowDate <- input$downloadDates[1]
-    highDate <- input$downloadDates[2]
+    lowDate <- reactive(input$downloadDates[1])
+    highDate <- reactive(input$downloadDates[2])
 
     if (input$filterFailed == 'Y'){
-      sqlfailed <- 'and QcStatus = passed_qc'
+      sqlfailed <- "and Samples.QcStatus = 'passed_qc'"
     }else{
-      sqlfailed <- ''
+      sqlfailed <- ""
     }
-
+  print(sqlfailed)
     if (input$filterByMutation == 'Y'){
-      mutation <- paste0(input$protein2, ":",input$mutation2)
-      getSamplesforDownloadQuery <- sqlInterpolate(con, "select Fasta,SampleId,PangoLineage,Region,Wave,ScorpioCall,QcStatus,SamplingDate,Gender,Age,IsVaccinated,Outcome from Samples
+      mutation <- paste0(input$protein2, ":",input$mutation2[1])
+      sql <- paste0("select Fasta,SampleId,PangoLineage,Region,Wave,ScorpioCall,QcStatus,SamplingDate,Gender,Age,IsVaccinated,Outcome from Samples
     inner join MutationSample on MutationSample.SamplesSampleId = Samples.SampleId
-    where MutationSample.MutationsMutationId = ?mut and ?qc", mut = mutation, qc = sqlfailed)
+    where MutationSample.MutationsMutationId = ?mut and (Samples.SamplingDate between ?low and ?high) ",sqlfailed)
+      getSamplesforDownloadQuery <- sqlInterpolate(con, sql, mut = mutation, low = lowDate(), high = highDate())
+      print(getSamplesforDownloadQuery)
       df <- dbGetQuery(con, getSamplesforDownloadQuery)
     }else {
-      getSamplesforDownloadQuery <- sqlInterpolate(con, "select Fasta,SampleId,PangoLineage,Region,Wave,ScorpioCall,QcStatus,SamplingDate,Gender,Age,IsVaccinated,Outcome from Samples
-    where MutationSample.MutationsMutationId = ?mut ?qc", qc = sqlfailed)
+      sql <- paste0("select Fasta,SampleId,PangoLineage,Region,Wave,ScorpioCall,QcStatus,SamplingDate,Gender,Age,IsVaccinated,Outcome from Samples
+    where (Samples.SamplingDate between ?low and ?high) ",sqlfailed)
+      getSamplesforDownloadQuery <- sqlInterpolate(con, sql ,low = lowDate(), high = highDate())
+      print(getSamplesforDownloadQuery)
       df <- dbGetQuery(con, getSamplesforDownloadQuery)
     }
-
+    print(count(df))
+    output$DownloadCount <- renderText({
+      nrow(df)
+      })
   })
 
 
