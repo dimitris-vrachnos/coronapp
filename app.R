@@ -45,6 +45,7 @@ ui <- fluidPage(useShinyjs(),
              dateRangeInput("dates",label = "Select Date Range", start = '2020-01-01'),
              radioButtons("interval", "Select Time interval", choices = c("Month" = "m", "Week" = "W")),
              plotOutput("timelapse"),
+             actionButton("test", "test stuff"),
              actionButton("submit", "Submit", style="float:right")
     )
   ),
@@ -62,6 +63,41 @@ server <- function(input, output, session) {
   pangoLineageQuery <- 'select PangoLineage, count(PangoLineage) from Samples where PangoLineage is not null group by PangoLineage order by count(PangoLineage) desc'
   scoprioCallQuery <- 'select ScorpioCall, count(ScorpioCall) from Samples where ScorpioCall is not null group by ScorpioCall order by count(ScorpioCall) desc'
   
+  intervaldf <- eventReactive(list(input$dates[1], input$dates[2], input$interval), {
+    con <- dbConnect(SQLite(), dbPath)
+    on.exit(dbDisconnect(con))
+    dateFormat <- paste0('%Y-%', input$interval)
+    intervalQuery  <-  sqlInterpolate(con,
+                                      'select strftime(?intervalUnit, SamplingDate) Interval from Samples where SamplingDate between ?dateLow and ?dateHigh group by Interval',
+                                      intervalUnit = dateFormat ,dateLow = input$dates[1], dateHigh = input$dates[2])
+    print(intervalQuery)
+    
+    intervals <- dbGetQuery(con, intervalQuery)
+    if (is.null(intervals)){
+      
+    }
+    intervals['Occurences'] = 0
+    
+    mutation <- paste0(input$protein, ":",input$mutation[1])
+    input <- input$interval
+    mutationTimelapseQuery <- sqlInterpolate(con, 'select strftime(?intervalUnit, SamplingDate) interval, count(MutationSample.MutationsMutationId)  from Samples
+    inner join MutationSample on MutationSample.SamplesSampleId = Samples.SampleId
+    where MutationSample.MutationsMutationId = ?mut
+    group by interval',intervalUnit = dateFormat, mut = mutation) 
+    df <- dbGetQuery(con, mutationTimelapseQuery)
+    for(i in intersect(intervals$Interval, df$interval)){
+      
+      intervals[intervals$Interval == i, 'Occurences']  = df[df$interval == i, 'count(MutationSample.MutationsMutationId)'] 
+    }
+    intervals
+  })
+  
+  # Sandbox button
+  observeEvent(input$test, {
+
+    print(intervaldf())
+  
+  })
   
   proteinNames <- reactive({
     proteinNamesQuery <- 'select distinct Protein from Mutations'
@@ -88,16 +124,8 @@ server <- function(input, output, session) {
   
   observeEvent(input$submit, {
     output$timelapse <- renderPlot({
-      on.exit(dbDisconnect(con), add = TRUE)
-      con <- dbConnect(SQLite(), dbPath)
-      mutation <- paste0(input$protein, ":",input$mutation[1])
-      input <- input$interval
-      mutationTimelapseQuery <- sqlInterpolate(con, "select strftime('%Y-%m', SamplingDate) month, count(MutationSample.MutationsMutationId)  from Samples
-    inner join MutationSample on MutationSample.SamplesSampleId = Samples.SampleId
-    where MutationSample.MutationsMutationId = ?mut
-    group by month", mut = mutation) 
-      df <- dbGetQuery(con, mutationTimelapseQuery)
-      ggplot2::ggplot(data = df, aes(x = month, y = `count(MutationSample.MutationsMutationId)`, group = 1)) + 
+      df <- intervaldf()
+      ggplot2::ggplot(data = df, aes(x = Interval, y = `Occurences`, group = 1)) + 
         geom_path() + 
         geom_point()
     })
