@@ -8,12 +8,16 @@ library(plyr)
 library(ggplot2)
 library(dplyr)
 library(patchwork)
+library(periscope)
+library(seqinr)
 
 dbPath <- "C:\\Users\\HemaLab\\Desktop\\PROJECTS\\shiny_virome\\CovidDb_v2.db"
 con <- dbConnect(SQLite(), dbPath)
-
+tempFasta <- "C:\\Users\\HemaLab\\Desktop\\PROJECTS\\shiny_virome\\my_data.fasta"
+tempCsv <- "C:\\Users\\HemaLab\\Desktop\\PROJECTS\\shiny_virome\\my_annotation.csv"
 mutationsDf <- dbGetQuery(con, "select * from Mutations limit 5")
 dbDisconnect(con)
+
 #mutationsDf <- dbReadTable(con, "Mutations")
 #mutationSampleDf <- dbReadTable(con, "MutationSample")
 #dbDisconnect(conn = con)
@@ -57,13 +61,17 @@ ui <- fluidPage(useShinyjs(),
                column(width = 3, radioButtons("filterByMutation", "Filter samples by 1 Specific Mutation ", choices = c("Yes" = "Y", "No" = "N"), selected = "N"))),
              dateRangeInput("downloadDates",label = "Select Date Range", start = '2020-01-01'),
              radioButtons("filterFailed", "Filter QC failed samples", choices = c("Yes" = "Y", "No" = "N"), selected = "Y"),
-             actionButton("download", "Download", style="float:right",),
-             fluidRow(
-               column(width = 8, "No of Samples to download :"),
-               column(width = 4, textOutput(outputId = "DownloadCount"))
-             )
+             fluidRow( 
+               column(width = 6, "Number of Samples found:"),
+               column(width = 3, textOutput(outputId = "DownloadCount")),
+               column(width = 3, actionButton("Fetch", "Search for Samples"))
+             ),
+             
+             downloadButton("downloadFasta", label = "Download Fasta"),
+             downloadButton("downloadAnnotation", label = "Download Annotation")
+             
     )
-  ),
+  )
 
 )
 
@@ -198,7 +206,7 @@ server <- function(input, output, session) {
     }
   })
 
-  observeEvent(input$download,{
+  observeEvent(input$downloadFasta,{
     on.exit(dbDisconnect(con), add = TRUE)
     con <- dbConnect(SQLite(), dbPath)
     lowDate <- reactive(input$downloadDates[1])
@@ -209,7 +217,7 @@ server <- function(input, output, session) {
     }else{
       sqlfailed <- ""
     }
-  print(sqlfailed)
+
     if (input$filterByMutation == 'Y'){
       mutation <- paste0(input$protein2, ":",input$mutation2[1])
       sql <- paste0("select Fasta,SampleId,PangoLineage,Region,Wave,ScorpioCall,QcStatus,SamplingDate,Gender,Age,IsVaccinated,Outcome from Samples
@@ -225,12 +233,42 @@ server <- function(input, output, session) {
       print(getSamplesforDownloadQuery)
       df <- dbGetQuery(con, getSamplesforDownloadQuery)
     }
-    print(count(df))
     output$DownloadCount <- renderText({
       nrow(df)
       })
+    
+    fastaDf <- df[,c("SampleId","Fasta")]
+    annotationDf <- df[,2:11]
+    
+    output$downloadFasta <- downloadHandler(
+      filename = function() {
+        paste("my_fasta", ".fasta", sep = "")
+      },
+      content = function(tempFasta) {
+        fastaLines = c()
+        colnames(fastaDf) <- c("name","seq")
+        for (rowNum in 1:nrow(fastaDf)){
+          fastaLines = c(fastaLines, as.character(paste(">", fastaDf[rowNum,"name"], sep = "")))
+          fastaLines = c(fastaLines,as.character(fastaDf[rowNum,"seq"]))
+        }
+        fileConn<-file(tempFasta)
+        writeLines(fastaLines, fileConn)
+      }
+    )
+    
+    output$downloadAnnotation <- downloadHandler(
+      filename = function() {
+        paste("my_annotation", ".csv", sep = "")
+      },
+      content = function(tempCsv) {
+        write.csv(annotationDf, tempCsv, row.names = FALSE)
+      }
+    )
+    
+    
   })
-
+  
+  
 
 
   ############## Plot Strains by time interval#######################################################
